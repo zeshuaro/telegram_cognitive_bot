@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import operator
 import os
+import re
 import requests
 import smtplib
 import time
@@ -36,6 +37,8 @@ dev_email_pw = os.environ.get("DEV_EMAIL_PW")
 is_email_feedback = os.environ.get("IS_EMAIL_FEEDBACK")
 smtp_host = os.environ.get("SMTP_HOST")
 
+comp_vision_token = os.environ.get("COMP_VISION_TOKEN")
+comp_vision_url = os.environ.get("COMP_VISION_URL")
 emotion_token = os.environ.get("EMOTION_TOKEN")
 emotion_url = os.environ.get("EMOTION_URL")
 
@@ -82,7 +85,8 @@ def image_cov_handler():
         entry_points=[MessageHandler(merged_filter, check_image, pass_user_data=True)],
 
         states={
-            RECEIVE_OPTION: [RegexHandler("^[Ee]motions", get_image_emotion, pass_user_data=True)],
+            RECEIVE_OPTION: [RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
+                             RegexHandler("^[Ee]motions", get_image_emotion, pass_user_data=True)],
         },
 
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -135,13 +139,63 @@ def check_image(bot, update, user_data):
 
         user_data["image_url"] = image_url
 
-    keyboard = [["Emotions"]]
+    user_data["msg_id"] = update.message.message_id
+    keyboard = [["Categories", "Emotions"]]
     reply_markup = ReplyKeyboardMarkup(keyboard)
+
     update.message.reply_text("Please tell me what do you want me to look for on the image.",
                               reply_markup=reply_markup,
                               one_time_keyboard=True)
 
     return RECEIVE_OPTION
+
+
+# Gets categories of the image
+def get_image_category(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Looking for the categories on the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_category"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "Categories"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+
+    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        num_categories = len(result["categories"])
+
+        if num_categories == 1:
+            text = "I think this image belongs to the category of "
+        else:
+            text = "I think this image belongs to the categories of "
+
+        for i, category in enumerate(result["categories"]):
+            category_name = category["name"].rstrip("_")
+            category_name = re.sub("_", " ", category_name)
+
+            if i == (num_categories - 2):
+                text += category_name + " and "
+            elif i == (num_categories - 1):
+                text += category_name
+            else:
+                text += category_name + ", "
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
 
 
 # Gets emotions on the image, and adds annotation onto the image
@@ -151,37 +205,15 @@ def get_image_emotion(bot, update, user_data):
         return
 
     update.message.reply_text("Analysing the emotions on the image.", reply_markup=ReplyKeyboardRemove())
+
     tele_id = update.message.from_user.id
-    image_name = str(tele_id)
-    out_image_name = image_name + "_emotion"
+    image_name = str(tele_id) + "_emotion"
+    out_image_name = image_name + "_done"
+
     headers = {"Ocp-Apim-Subscription-Key": emotion_token, "Content-Type": "application/octet-stream"}
     json = None
     params = None
-
-    if "image_id" in user_data and user_data["image_id"]:
-        image_id = user_data["image_id"]
-        image_file = bot.get_file(image_id)
-        image_file.download(image_name)
-    else:
-        image_url = user_data["image_url"]
-        response = requests.get(image_url)
-
-        if response.status_code == 200:
-            with open(image_name, "wb") as f:
-                for chunk in response:
-                    f.write(chunk)
-        else:
-            update.message.reply_text("I could not download the image from the URL you sent me. Please check the URL "
-                                      "and try again.")
-
-    im = Image.open(image_name)
-
-    # Converts unsupported image format to JPEG
-    if im.format not in ("JPEG", "PNG", "GIF", "BMP"):
-        im.save(image_name, "JPEG")
-
-    with open(image_name, "rb") as f:
-        data = f.read()
+    data = fix_and_read_image(bot, update, user_data, image_name)
 
     result, err_msg = process_request("post", emotion_url, json, data, headers, params)
 
@@ -222,6 +254,34 @@ def get_image_emotion(bot, update, user_data):
     return ConversationHandler.END
 
 
+# Checks if the image format is supported, if not transform it into JPEG format
+def fix_and_read_image(bot, update, user_data, image_name):
+    if "image_id" in user_data and user_data["image_id"]:
+        image_id = user_data["image_id"]
+        image_file = bot.get_file(image_id)
+        image_file.download(image_name)
+    else:
+        image_url = user_data["image_url"]
+        response = requests.get(image_url)
+
+        if response.status_code == 200:
+            with open(image_name, "wb") as f:
+                for chunk in response:
+                    f.write(chunk)
+        else:
+            update.message.reply_text("I could not download the image from the URL you sent me. Please check the URL "
+                                      "and try again.")
+
+    im = Image.open(image_name)
+    if im.format not in ("JPEG", "PNG", "GIF", "BMP"):
+        im.save(image_name, "JPEG")
+
+    with open(image_name, "rb") as f:
+        data = f.read()
+
+    return data
+
+
 # Processes request
 def process_request(method, url, json, data, headers, params):
     result = None
@@ -250,7 +310,7 @@ def process_request(method, url, json, data, headers, params):
                 result = response.json() if response.content else None
         else:
             err_msg = "Something went wrong. Please try again."
-            logger.error("Error code: %d\nMessage: %s" % (response.status_code, response.json()["error"]["message"]))
+            logger.error("Error code: %d, Message: %s" % (response.status_code, response.json()["message"]))
 
         break
 
