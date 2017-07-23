@@ -86,7 +86,9 @@ def image_cov_handler():
 
         states={
             RECEIVE_OPTION: [RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
-                             RegexHandler("^[Ee]motions", get_image_emotion, pass_user_data=True)],
+                             RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
+                             RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
+                             RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
         },
 
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -113,6 +115,7 @@ def check_image(bot, update, user_data):
                 update.message.reply_text("The file you sent is not an image. Please try again.")
 
                 return ConversationHandler.END
+
         if image_size > cognitive_image_size_limit:
             update.message.reply_text("The file you sent is too large for me to process. Sorry.")
 
@@ -140,7 +143,11 @@ def check_image(bot, update, user_data):
         user_data["image_url"] = image_url
 
     user_data["msg_id"] = update.message.message_id
-    keyboard = [["Categories", "Emotions"]]
+
+    keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
+    keywords.insert(0, "Full Analysis")
+    keyboard_size = 3
+    keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
     reply_markup = ReplyKeyboardMarkup(keyboard)
 
     update.message.reply_text("Please tell me what do you want me to look for on the image.",
@@ -166,27 +173,82 @@ def get_image_category(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Categories"}
     data = fix_and_read_image(bot, update, user_data, image_name)
-
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
         num_categories = len(result["categories"])
 
         if num_categories == 1:
-            text = "I think this image belongs to the category of "
+            text = "I think it belongs to the category of "
         else:
-            text = "I think this image belongs to the categories of "
+            text = "I think it belongs to the categories of "
 
         for i, category in enumerate(result["categories"]):
-            category_name = category["name"].rstrip("_")
-            category_name = re.sub("_", " ", category_name)
+            name = category["name"].rstrip("_")
+            name = re.sub("_", " ", name)
 
             if i == (num_categories - 2):
-                text += category_name + " and "
+                text += name + " and "
             elif i == (num_categories - 1):
-                text += category_name
+                text += name
             else:
-                text += category_name + ", "
+                text += name + ", "
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
+# Gets a description of the image
+def get_image_description(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Trying to describe the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_description"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "Description", "details": "Landmarks"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        target_landmark = None
+        target_caption = None
+        max_landmark_conf = 0
+        max_caption_conf = 0
+
+        for category in result["categories"]:
+            if "detail" in category and "landmarks" in category["detail"]:
+                for landmark in category["detail"]["landmarks"]:
+                    landmark_name, landmark_conf = landmark["name"], landmark["confidence"]
+
+                    if landmark_conf > max_landmark_conf:
+                        target_landmark = landmark_name
+                        max_landmark_conf = landmark_conf
+
+        if target_landmark:
+            text = "I'll say it's the %s." % target_landmark
+        else:
+            for caption in result["description"]["captions"]:
+                print(caption)
+                caption_text, caption_conf = caption["text"], caption["confidence"]
+
+                if caption_conf > max_caption_conf:
+                    target_caption = caption_text
+                    max_caption_conf = caption_conf
+
+            text = "I'll say it's %s." % target_caption
 
         update.message.reply_text(text, reply_to_message_id=msg_id)
     elif err_msg:
@@ -199,26 +261,57 @@ def get_image_category(bot, update, user_data):
 
 
 # Gets emotions on the image, and adds annotation onto the image
-def get_image_emotion(bot, update, user_data):
+def get_image_face(bot, update, user_data):
     if ("image_id" in user_data and not user_data["image_id"]) or \
             ("image_url" in user_data and not user_data["image_url"]):
         return
 
-    update.message.reply_text("Analysing the emotions on the image.", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("Analysing the faces on the image.", reply_markup=ReplyKeyboardRemove())
 
     tele_id = update.message.from_user.id
-    image_name = str(tele_id) + "_emotion"
+    image_name = str(tele_id) + "_face"
     out_image_name = image_name + "_done"
+    face_info = {}
 
-    headers = {"Ocp-Apim-Subscription-Key": emotion_token, "Content-Type": "application/octet-stream"}
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
-    params = None
+    params = {"visualFeatures": "Faces"}
     data = fix_and_read_image(bot, update, user_data, image_name)
-
-    result, err_msg = process_request("post", emotion_url, json, data, headers, params)
+    result, face_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
-        im = Image.open(image_name)
+        for face in result["faces"]:
+            age, gender = face["age"], face["gender"]
+            face_rectangle = face["faceRectangle"]
+            left = face_rectangle["left"]
+            top = face_rectangle["top"]
+            width = face_rectangle["width"]
+            height = face_rectangle["height"]
+
+            face_info[(left, top, width, height)] = (age, gender)
+    elif not face_err_msg:
+        update.message.reply_text("I could not find any faces on the image. Please send me another image with faces.")
+
+        if os.path.exists(image_name):
+            os.remove(image_name)
+        if os.path.exists(out_image_name):
+            os.remove(out_image_name)
+
+        return ConversationHandler.END
+
+    if face_info:
+        face_rectangles = []
+
+        for face_rectangle in face_info:
+            face_rectangles.append(",".join(map(str, face_rectangle)))
+
+        params = {"faceRectangles": ";".join(face_rectangles)}
+
+    headers = {"Ocp-Apim-Subscription-Key": emotion_token, "Content-Type": "application/octet-stream"}
+    result, emotion_err_msg = process_request("post", emotion_url, json, data, headers, params)
+
+    if result:
+        im = Image.open(image_name).convert("RGB")
         draw = ImageDraw.Draw(im, "RGBA")
         font = ImageFont.truetype("segoeuil.ttf", 30)
 
@@ -226,23 +319,34 @@ def get_image_emotion(bot, update, user_data):
             face_rectangle = face["faceRectangle"]
             left = face_rectangle["left"]
             top = face_rectangle["top"]
-            right = left + face_rectangle["width"]
-            bottom = top + face_rectangle["height"]
-            top_offset = top - 45
+            width = face_rectangle["width"]
+            height = face_rectangle["height"]
+            right = left + width
+            bottom = top + height
+            top_offset = top - 80 if top - 80 >= 0 else 0
+            text = ""
 
-            emotion = max(face["scores"].items(), key=operator.itemgetter(1))[0].capitalize()
-            text_size = draw.textsize(emotion, font)
+            if (left, top, width, height) in face_info:
+                age, gender = face_info[(left, top, width, height)]
+                text += "%s %d\n" % (gender, age)
+
+            text += max(face["scores"].items(), key=operator.itemgetter(1))[0].capitalize()
+            text_size = draw.multiline_textsize(text, font)
 
             draw.rectangle([left, top, right, bottom])
             draw.rectangle([left, top_offset, left + text_size[0], top_offset + text_size[1]],
                            fill=(241, 241, 242, 170))
-            draw.text((left, top_offset), emotion, (25, 149, 173), font)
+            draw.multiline_text((left, top_offset), text, (25, 149, 173), font)
 
-        im.save(out_image_name, im.format)
+        im.show()
+        im.save(out_image_name, "JPEG")
 
-        update.message.reply_document(open(out_image_name, "rb"), caption="Here are the emotions on the image.")
-    elif err_msg:
-        update.message.reply_text(err_msg)
+        update.message.reply_document(open(out_image_name, "rb"), caption="Here are the faces on the image.")
+    elif face_err_msg and not emotion_err_msg:
+        update.message.reply_text("I could only look at the emotions on the image but not the age and gender as I "
+                                  "probably ran out of quota of processing that information.")
+    elif emotion_err_msg:
+        update.message.reply_text(emotion_err_msg)
     else:
         update.message.reply_text("I could not find any faces on the image. Please send me another image with faces.")
 
@@ -254,14 +358,64 @@ def get_image_emotion(bot, update, user_data):
     return ConversationHandler.END
 
 
+# Gets tags of the image
+def get_image_tag(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Looking for the tags on the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_tag"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "Tags"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+
+    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        num_tags = len(result["tags"])
+
+        if num_tags == 1:
+            text = "I think it is "
+        else:
+            text = "I think it has tags of "
+
+        for i, category in enumerate(result["tags"]):
+            tag_name = "#" + category["name"].rstrip("_")
+            tag_name = re.sub("_", " ", tag_name)
+
+            if i == (num_tags - 2):
+                text += tag_name + " and "
+            elif i == (num_tags - 1):
+                text += tag_name
+            else:
+                text += tag_name + ", "
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
 # Checks if the image format is supported, if not transform it into JPEG format
 def fix_and_read_image(bot, update, user_data, image_name):
     if "image_id" in user_data and user_data["image_id"]:
         image_id = user_data["image_id"]
+        del user_data["image_id"]
         image_file = bot.get_file(image_id)
         image_file.download(image_name)
     else:
         image_url = user_data["image_url"]
+        del user_data["image_url"]
         response = requests.get(image_url)
 
         if response.status_code == 200:
@@ -310,7 +464,17 @@ def process_request(method, url, json, data, headers, params):
                 result = response.json() if response.content else None
         else:
             err_msg = "Something went wrong. Please try again."
-            logger.error("Error code: %d, Message: %s" % (response.status_code, response.json()["message"]))
+
+            try:
+                logger.error("Error code: %d, Message: %s" % (response.status_code, response.json()["message"]))
+            except KeyError:
+                pass
+
+            try:
+                logger.error("Error code: %d, Message: %s" %
+                             (response.status_code, response.json()["error"]["message"]))
+            except KeyError:
+                pass
 
         break
 
@@ -380,7 +544,7 @@ def receive_feedback(bot, update):
 # Cancels feedback opteration
 @run_async
 def cancel(bot, update):
-    update.message.reply_text("Operation cancelled.")
+    update.message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
