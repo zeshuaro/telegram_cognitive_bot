@@ -88,7 +88,8 @@ def image_cov_handler():
         entry_points=[MessageHandler(merged_filter, check_image, pass_user_data=True)],
 
         states={
-            RECEIVE_OPTION: [RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
+            RECEIVE_OPTION: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
+                             RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
                              RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
                              RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
                              RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
@@ -150,7 +151,7 @@ def check_image(bot, update, user_data):
     user_data["msg_id"] = update.message.message_id
 
     keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
-    keywords.insert(0, "Full Analysis")
+    keywords.append("Full Analysis")
     keyboard_size = 3
     keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
     reply_markup = ReplyKeyboardMarkup(keyboard)
@@ -160,6 +161,212 @@ def check_image(bot, update, user_data):
                               one_time_keyboard=True)
 
     return RECEIVE_OPTION
+
+
+# Fully analysis an image
+def get_image_full_analysis(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Analysing the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_full"
+    out_image_name = image_name + "_done"
+    accent_colour = None
+    face_info = {}
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "Categories, Tags, Description, Faces, ImageType, Color",
+              "details": "Celebrities, Landmarks"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+    result, comp_vision_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        text = "Here is a summary of it:\n\n"
+        num_categories = len(result["categories"])
+        num_tags = len(result["tags"])
+        target_landmark = None
+        target_caption = None
+        max_landmark_conf = 0
+        max_caption_conf = 0
+
+        if num_categories == 1:
+            text += "Category: "
+        else:
+            text += "Categories: "
+
+        # Gets categories info
+        for i, category in enumerate(result["categories"]):
+            name = category["name"].rstrip("_")
+            name = re.sub("_", " ", name)
+
+            if i == (num_categories - 2):
+                text += name + " and "
+            elif i == (num_categories - 1):
+                text += name + "\n"
+            else:
+                text += name + ", "
+
+            # Gets landmarks info if exists
+            if "detail" in category and "landmarks" in category["detail"]:
+                for landmark in category["detail"]["landmarks"]:
+                    landmark_name, landmark_conf = landmark["name"], landmark["confidence"]
+
+                    if landmark_conf > max_landmark_conf:
+                        target_landmark = landmark_name
+                        max_landmark_conf = landmark_conf
+
+        if num_tags == 1:
+            text += "Tag: "
+        else:
+            text += "Tags: "
+
+        # Gets tags info
+        for i, category in enumerate(result["tags"]):
+            tag_name = "#" + category["name"].rstrip("_")
+            tag_name = re.sub(" ", "", tag_name)
+
+            if i == (num_tags - 2):
+                text += tag_name + " and "
+            elif i == (num_tags - 1):
+                text += tag_name + "\n\n"
+            else:
+                text += tag_name + ", "
+
+        # Gets description
+        if target_landmark:
+            text += "Description: it's the %s.\n\n" % target_landmark
+        else:
+            for caption in result["description"]["captions"]:
+                caption_text, caption_conf = caption["text"], caption["confidence"]
+
+                if caption_conf > max_caption_conf:
+                    target_caption = caption_text
+                    max_caption_conf = caption_conf
+
+            text += "Description: it's %s.\n\n" % target_caption
+
+        image_type = result["imageType"]
+        clip_art_type, line_drawing_type = image_type["clipArtType"], image_type["lineDrawingType"]
+        clip_art_type = clip_art_types[clip_art_type]
+        text += "Clip art type: %s\n" % clip_art_type
+
+        if line_drawing_type:
+            text += "Line drawing: yes\n\n"
+        else:
+            text += "Line drawing: no\n\n"
+
+        # Gets colour info
+        colour = result["color"]
+        foreground_colour = colour["dominantColorForeground"].lower()
+        background_colour = colour["dominantColorBackground"].lower()
+        accent_colour = "#" + colour["accentColor"]
+        is_bw = colour["isBWImg"]
+        dominant_colours = ", ".join(map(str.lower, colour["dominantColors"]))
+
+        if is_bw:
+            text += "Black and white image: yes\n"
+        else:
+            text += "Black and white image: no\n"
+
+        text += "Foreground dominant colour: %s\n" % foreground_colour
+        text += "Background dominant colour: %s\n" % background_colour
+        text += "Dominant colours: %s\n" % dominant_colours
+        text += "Accent colour: %s\n\n" % accent_colour
+        text += "I am still analysing the faces on the image. You can look at the summary while you are waiting."
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+
+        # Stores face info for emotion analysis
+        for face in result["faces"]:
+            age, gender = face["age"], face["gender"]
+            face_rectangle = face["faceRectangle"]
+            left = face_rectangle["left"]
+            top = face_rectangle["top"]
+            width = face_rectangle["width"]
+            height = face_rectangle["height"]
+
+            face_info[(left, top, width, height)] = (age, gender)
+    elif not comp_vision_err_msg:
+        update.message.reply_text("Something went wrong. Please try again.")
+
+        if os.path.exists(image_name):
+            os.remove(image_name)
+        if os.path.exists(out_image_name):
+            os.remove(out_image_name)
+
+        return ConversationHandler.END
+
+    if face_info:
+        face_rectangles = []
+
+        for face_rectangle in face_info:
+            face_rectangles.append(",".join(map(str, face_rectangle)))
+
+        params = {"faceRectangles": ";".join(face_rectangles)}
+
+    headers = {"Ocp-Apim-Subscription-Key": emotion_token, "Content-Type": "application/octet-stream"}
+    result, emotion_err_msg = process_request("post", emotion_url, json, data, headers, params)
+
+    if result:
+        process_image_face(image_name, out_image_name, result, face_info, accent_colour)
+
+        update.message.reply_document(open(out_image_name, "rb"), caption="Here are the faces analysis on the image.")
+
+        if comp_vision_err_msg and not emotion_err_msg:
+            update.message.reply_text("I could only look at the emotions on the image but not the age and gender as I "
+                                      "probably ran out of quota of processing that information.")
+    elif emotion_err_msg:
+        update.message.reply_text(emotion_err_msg)
+    else:
+        update.message.reply_text("I could not find any faces on the image.")
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+    if os.path.exists(out_image_name):
+        os.remove(out_image_name)
+
+    return ConversationHandler.END
+
+
+# Annotates the faces on the image
+def process_image_face(image_name, out_image_name, result, face_info, accent_colour):
+    im = Image.open(image_name).convert("RGB")
+    draw = ImageDraw.Draw(im, "RGBA")
+    font = ImageFont.truetype("segoeuil.ttf", 16)
+
+    for face in result:
+        face_rectangle = face["faceRectangle"]
+        left = face_rectangle["left"]
+        top = face_rectangle["top"]
+        width = face_rectangle["width"]
+        height = face_rectangle["height"]
+        right = left + width
+        bottom = top + height
+        top_offset = top - 50 if top - 50 >= 0 else 0
+        text = ""
+
+        if (left, top, width, height) in face_info:
+            age, gender = face_info[(left, top, width, height)]
+            text += "%s %d\n" % (gender, age)
+
+        text += max(face["scores"].items(), key=operator.itemgetter(1))[0].capitalize()
+        text_size = draw.multiline_textsize(text, font)
+
+        draw.rectangle([left, top, right, bottom])
+        draw.rectangle([left, top_offset, left + text_size[0], top_offset + text_size[1]],
+                       fill=(241, 241, 242, 170))
+
+        if accent_colour:
+            draw.multiline_text((left, top_offset), text, accent_colour, font)
+        else:
+            draw.multiline_text((left, top_offset), text, (25, 149, 173), font)
+
+    im.save(out_image_name, "JPEG")
 
 
 # Gets categories of the image
@@ -292,7 +499,6 @@ def get_image_description(bot, update, user_data):
             text = "I'll say it's the %s." % target_landmark
         else:
             for caption in result["description"]["captions"]:
-                print(caption)
                 caption_text, caption_conf = caption["text"], caption["confidence"]
 
                 if caption_conf > max_caption_conf:
@@ -365,38 +571,7 @@ def get_image_face(bot, update, user_data):
     result, emotion_err_msg = process_request("post", emotion_url, json, data, headers, params)
 
     if result:
-        im = Image.open(image_name).convert("RGB")
-        draw = ImageDraw.Draw(im, "RGBA")
-        font = ImageFont.truetype("segoeuil.ttf", 16)
-
-        for face in result:
-            face_rectangle = face["faceRectangle"]
-            left = face_rectangle["left"]
-            top = face_rectangle["top"]
-            width = face_rectangle["width"]
-            height = face_rectangle["height"]
-            right = left + width
-            bottom = top + height
-            top_offset = top - 50 if top - 50 >= 0 else 0
-            text = ""
-
-            if (left, top, width, height) in face_info:
-                age, gender = face_info[(left, top, width, height)]
-                text += "%s %d\n" % (gender, age)
-
-            text += max(face["scores"].items(), key=operator.itemgetter(1))[0].capitalize()
-            text_size = draw.multiline_textsize(text, font)
-
-            draw.rectangle([left, top, right, bottom])
-            draw.rectangle([left, top_offset, left + text_size[0], top_offset + text_size[1]],
-                           fill=(241, 241, 242, 170))
-
-            if accent_colour:
-                draw.multiline_text((left, top_offset), text, accent_colour, font)
-            else:
-                draw.multiline_text((left, top_offset), text, (25, 149, 173), font)
-
-        im.save(out_image_name, "JPEG")
+        process_image_face(image_name, out_image_name, result, face_info, accent_colour)
 
         update.message.reply_document(open(out_image_name, "rb"), caption="Here are the faces on the image.")
     elif face_err_msg and not emotion_err_msg:
@@ -443,7 +618,7 @@ def get_image_tag(bot, update, user_data):
 
         for i, category in enumerate(result["tags"]):
             tag_name = "#" + category["name"].rstrip("_")
-            tag_name = re.sub("_", " ", tag_name)
+            tag_name = re.sub(" ", "", tag_name)
 
             if i == (num_tags - 2):
                 text += tag_name + " and "
