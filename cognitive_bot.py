@@ -231,7 +231,7 @@ def get_image_colour(bot, update, user_data):
         colour = result["color"]
         foreground_colour = colour["dominantColorForeground"]
         background_colour = colour["dominantColorBackground"].lower()
-        accent_colour = colour["accentColor"].lower()
+        accent_colour = colour["accentColor"]
         is_bw = colour["isBWImg"]
         dominant_colours = ", ".join(map(str.lower, colour["dominantColors"]))
 
@@ -240,7 +240,7 @@ def get_image_colour(bot, update, user_data):
         else:
             text = "This is not a black and white image.\n\n"
 
-        text += "%s and %s dominant the foreground and background respectively. " % \
+        text += "%s and %s dominate the foreground and background respectively. " % \
                 (foreground_colour, background_colour)
         text += "The dominant colours include %s.\n\n" % dominant_colours
         text += "And the accent colour is #%s." % accent_colour
@@ -322,15 +322,18 @@ def get_image_face(bot, update, user_data):
     tele_id = update.message.from_user.id
     image_name = str(tele_id) + "_face"
     out_image_name = image_name + "_done"
+    accent_colour = None
     face_info = {}
 
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
-    params = {"visualFeatures": "Faces"}
+    params = {"visualFeatures": "Faces, Color"}
     data = fix_and_read_image(bot, update, user_data, image_name)
     result, face_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
+        accent_colour = "#" + result["color"]["accentColor"]
+
         for face in result["faces"]:
             age, gender = face["age"], face["gender"]
             face_rectangle = face["faceRectangle"]
@@ -364,7 +367,7 @@ def get_image_face(bot, update, user_data):
     if result:
         im = Image.open(image_name).convert("RGB")
         draw = ImageDraw.Draw(im, "RGBA")
-        font = ImageFont.truetype("segoeuil.ttf", 30)
+        font = ImageFont.truetype("segoeuil.ttf", 16)
 
         for face in result:
             face_rectangle = face["faceRectangle"]
@@ -374,7 +377,7 @@ def get_image_face(bot, update, user_data):
             height = face_rectangle["height"]
             right = left + width
             bottom = top + height
-            top_offset = top - 80 if top - 80 >= 0 else 0
+            top_offset = top - 50 if top - 50 >= 0 else 0
             text = ""
 
             if (left, top, width, height) in face_info:
@@ -387,9 +390,12 @@ def get_image_face(bot, update, user_data):
             draw.rectangle([left, top, right, bottom])
             draw.rectangle([left, top_offset, left + text_size[0], top_offset + text_size[1]],
                            fill=(241, 241, 242, 170))
-            draw.multiline_text((left, top_offset), text, (25, 149, 173), font)
 
-        im.show()
+            if accent_colour:
+                draw.multiline_text((left, top_offset), text, accent_colour, font)
+            else:
+                draw.multiline_text((left, top_offset), text, (25, 149, 173), font)
+
         im.save(out_image_name, "JPEG")
 
         update.message.reply_document(open(out_image_name, "rb"), caption="Here are the faces on the image.")
