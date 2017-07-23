@@ -46,6 +46,8 @@ cognitive_image_size_limit = 4000000
 download_size_limit = 20000000
 upload_size_limit = 50000000
 
+clip_art_types = {0: "non-clip-art", 1: "ambiguous", 2: "normal-clip-art", 3: "good-clip-art"}
+
 
 # Sends start message
 @run_async
@@ -77,6 +79,7 @@ def donate(bot, update):
     bot.send_message(player_tele_id, message)
 
 
+# Creates an image conversation handler
 def image_cov_handler():
     merged_filter = (Filters.document | Filters.entity(MessageEntity.URL) | Filters.photo) & \
              (~Filters.forwarded | Filters.forwarded)
@@ -86,8 +89,10 @@ def image_cov_handler():
 
         states={
             RECEIVE_OPTION: [RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
+                             RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
                              RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
                              RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
+                             RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
                              RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
         },
 
@@ -204,6 +209,52 @@ def get_image_category(bot, update, user_data):
     return ConversationHandler.END
 
 
+# Gets colour info of the image
+def get_image_colour(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Analysing the colours on the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_colour"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "Color"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        colour = result["color"]
+        foreground_colour = colour["dominantColorForeground"]
+        background_colour = colour["dominantColorBackground"].lower()
+        accent_colour = colour["accentColor"].lower()
+        is_bw = colour["isBWImg"]
+        dominant_colours = ", ".join(map(str.lower, colour["dominantColors"]))
+
+        if is_bw:
+            text = "This is a black and white image.\n\n"
+        else:
+            text = "This is not a black and white image.\n\n"
+
+        text += "%s and %s dominant the foreground and background respectively. " % \
+                (foreground_colour, background_colour)
+        text += "The dominant colours include %s.\n\n" % dominant_colours
+        text += "And the accent colour is #%s." % accent_colour
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
 # Gets a description of the image
 def get_image_description(bot, update, user_data):
     if ("image_id" in user_data and not user_data["image_id"]) or \
@@ -260,7 +311,7 @@ def get_image_description(bot, update, user_data):
     return ConversationHandler.END
 
 
-# Gets emotions on the image, and adds annotation onto the image
+# Gets faces (age, emotion, gender) on the image, and adds annotation onto the image
 def get_image_face(bot, update, user_data):
     if ("image_id" in user_data and not user_data["image_id"]) or \
             ("image_url" in user_data and not user_data["image_url"]):
@@ -374,7 +425,6 @@ def get_image_tag(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Tags"}
     data = fix_and_read_image(bot, update, user_data, image_name)
-
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -395,6 +445,49 @@ def get_image_tag(bot, update, user_data):
                 text += tag_name
             else:
                 text += tag_name + ", "
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
+# Gets image type
+def get_image_type(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Identifying the image type.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_type"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"visualFeatures": "ImageType"}
+    data = fix_and_read_image(bot, update, user_data, image_name)
+    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+
+    if result:
+        image_type = result["imageType"]
+        clip_art_type, line_drawing_type = image_type["clipArtType"], image_type["lineDrawingType"]
+        clip_art_type = clip_art_types[clip_art_type]
+
+        if clip_art_type == "ambiguous":
+            text = "I'm not sure if it's a clip art or not, but "
+        else:
+            text = "I think it's a %s, and " % clip_art_type
+
+        if line_drawing_type:
+            text += "I think it's a line drawing."
+        else:
+            text += "I think it's not a line drawing."
 
         update.message.reply_text(text, reply_to_message_id=msg_id)
     elif err_msg:
