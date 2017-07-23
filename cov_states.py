@@ -1,1 +1,0 @@
-RECEIVE_OPTION = 0

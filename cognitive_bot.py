@@ -9,16 +9,19 @@ import operator
 import os
 import re
 import requests
+import shlex
 import smtplib
+import speech_recognition as sr
 import time
 
 from PIL import Image, ImageDraw, ImageFont
+from subprocess import Popen, PIPE
 
 from telegram import MessageEntity, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, ConversationHandler, MessageHandler, Filters, RegexHandler
 from telegram.ext.dispatcher import run_async
 
-from cov_states import *
+from cognitive_cov_states import *
 
 # Enable logging
 logging.basicConfig(format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %I:%M:%S %p",
@@ -41,6 +44,7 @@ comp_vision_token = os.environ.get("COMP_VISION_TOKEN")
 comp_vision_url = os.environ.get("COMP_VISION_URL")
 emotion_token = os.environ.get("EMOTION_TOKEN")
 emotion_url = os.environ.get("EMOTION_URL")
+bing_speech_token = os.environ.get("BING_SPEECH_TOKEN")
 
 cognitive_image_size_limit = 4000000
 download_size_limit = 20000000
@@ -55,7 +59,7 @@ def start(bot, update):
     tele_id = update.message.chat.id
 
     if update.message.chat.type != "group":
-        message = "Start"
+        message = "Welcome to Cognitive Bot. I can do visual and speech analysis. Type /help to see how to use the bot."
 
         bot.sendMessage(tele_id, message)
 
@@ -63,11 +67,12 @@ def start(bot, update):
 # Sends help message
 @run_async
 def help(bot, update):
-    player_tele_id = update.message.from_user.id
+    tele_id = update.message.from_user.id
 
-    message = "Help"
+    message = "Simply send me an image and I will go from there with you. I highly recommend you to send it as a " \
+              "document to prevent compression of the image."
 
-    bot.sendMessage(player_tele_id, message)
+    bot.sendMessage(tele_id, message)
 
 
 # Sends donate message
@@ -80,21 +85,22 @@ def donate(bot, update):
 
 
 # Creates an image conversation handler
-def image_cov_handler():
-    merged_filter = (Filters.document | Filters.entity(MessageEntity.URL) | Filters.photo) & \
-             (~Filters.forwarded | Filters.forwarded)
+def file_cov_handler():
+    merged_filter = (Filters.audio | Filters.document | Filters.entity(MessageEntity.URL) | Filters.photo |
+                     Filters.voice) & (~Filters.forwarded | Filters.forwarded)
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(merged_filter, check_image, pass_user_data=True)],
+        entry_points=[MessageHandler(merged_filter, check_file, pass_user_data=True)],
 
         states={
-            RECEIVE_OPTION: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
-                             RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
-                             RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
-                             RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
-                             RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
-                             RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
-                             RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
+            RECEIVE_IMAGE: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
+                            RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
+                            RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
+                            RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
+                            RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
+                            RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
+                            RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
+            RECEIVE_AUDIO: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)]
         },
 
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -106,61 +112,87 @@ def image_cov_handler():
 
 
 # Validates image received
-def check_image(bot, update, user_data):
-    if update.message.document or update.message.photo:
-        is_doc = update.message.document
-        image = update.message.document if is_doc else update.message.photo[0]
-        image_id = image.file_id
-        image_name = image.file_name if is_doc else None
-        image_size = image.file_size
+def check_file(bot, update, user_data):
+    file_type = None
+    return_type = ConversationHandler.END
 
-        if is_doc:
-            mimetype = mimetypes.guess_type(image_name)[0]
+    if update.message.document:
+        file_type = "doc"
+    elif update.message.photo:
+        file_type = "image"
+    elif update.message.audio or update.message.voice:
+        file_type = "audio"
 
-            if not mimetype.startswith("image"):
-                update.message.reply_text("The file you sent is not an image. Please try again.")
+    if file_type == "doc":
+        doc = update.message.document
+        doc_id = doc.file_id
+        doc_name = doc.file_name
+        doc_size = doc.file_size
+
+        mimetype = mimetypes.guess_type(doc_name)[0]
+
+        if mimetype.startswith("image"):
+            if doc_size > cognitive_image_size_limit:
+                update.message.reply_text("The file you sent is too large for me to process. Sorry.")
 
                 return ConversationHandler.END
 
-        if image_size > cognitive_image_size_limit:
-            update.message.reply_text("The file you sent is too large for me to process. Sorry.")
-
-            return ConversationHandler.END
-
-        user_data["image_id"] = image_id
+            user_data["image_id"] = doc_id
+            return_type = RECEIVE_IMAGE
+        elif mimetype.startswith("audio"):
+            user_data["audio_id"] = doc_id
+            return_type = RECEIVE_AUDIO
+    elif file_type == "image":
+        image = update.message.photo[0]
+        user_data["image_id"] = image.file_id
+        return_type = RECEIVE_IMAGE
+    elif file_type == "audio":
+        audio = update.message.audio if update.message.audio else update.message.voice
+        user_data["audio_id"] = audio.file_id
+        return_type = RECEIVE_AUDIO
     else:
-        image_url = update.message.text
-        mimetype = mimetypes.guess_type(image_url)[0]
-        response = requests.get(image_url)
+        file_url = update.message.text
+        mimetype = mimetypes.guess_type(file_url)[0]
+        response = requests.get(file_url)
 
-        if not mimetype.startswith("image"):
-            update.message.reply_text("The URL you sent is not an image. Please try again.")
-
-            return ConversationHandler.END
+        if mimetype.startswith("image"):
+            user_data["image_url"] = file_url
+            return_type = RECEIVE_IMAGE
+        elif mimetype.startswith("audio"):
+            user_data["audio_url"] = file_url
+            return_type = RECEIVE_AUDIO
         elif response.status_code not in range(200, 209):
-            update.message.reply_text("I could not retrieve the image from the URL you sent me. Please try again.")
+            update.message.reply_text("I could not retrieve the file from the URL you sent me. Please try again.")
 
             return ConversationHandler.END
-        elif int(response.headers["content-length"]) > cognitive_image_size_limit:
+        elif mimetype.startswith("image") and int(response.headers["content-length"]) > cognitive_image_size_limit:
             update.message.reply_text("The image on the URL you sent me is too large for me to process. Sorry.")
 
             return ConversationHandler.END
 
-        user_data["image_url"] = image_url
-
     user_data["msg_id"] = update.message.message_id
 
-    keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
-    keywords.append("Full Analysis")
-    keyboard_size = 3
-    keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
-    reply_markup = ReplyKeyboardMarkup(keyboard)
+    if return_type == RECEIVE_IMAGE:
+        keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
+        keywords.append("Full Analysis")
+        keyboard_size = 3
+        keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
+        reply_markup = ReplyKeyboardMarkup(keyboard)
 
-    update.message.reply_text("Please tell me what do you want me to look for on the image.",
-                              reply_markup=reply_markup,
-                              one_time_keyboard=True)
+        update.message.reply_text("Please tell me what do you want me to look for on the image.",
+                                  reply_markup=reply_markup,
+                                  one_time_keyboard=True)
+    elif return_type == RECEIVE_AUDIO:
+        keywords = sorted(["To Text"])
+        keyboard_size = 3
+        keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
+        reply_markup = ReplyKeyboardMarkup(keyboard)
 
-    return RECEIVE_OPTION
+        update.message.reply_text("Please tell me what do you want me to do with the audio.",
+                                  reply_markup=reply_markup,
+                                  one_time_keyboard=True)
+
+    return return_type
 
 
 # Fully analysis an image
@@ -710,6 +742,77 @@ def fix_and_read_image(bot, update, user_data, image_name):
     return data
 
 
+def audio_to_text(bot, update, user_data):
+    if ("audio_id" in user_data and not user_data["audio_id"]) or \
+            ("audio_url" in user_data and not user_data["audio_url"]):
+        return
+
+    update.message.reply_text("Analysing your audio.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    audio_name = str(tele_id) + "_audio.wav"
+    audio_temp_name = audio_name + "_temp"
+
+    audio = fix_and_read_audio(bot, update, user_data, audio_name, audio_temp_name)
+    r = sr.Recognizer()
+
+    try:
+        text = r.recognize_bing(audio, key=bing_speech_token) + "\n"
+    except sr.UnknownValueError:
+        text = "I could not understand the audio. Sorry"
+    except sr.RequestError as e:
+        logger.error("Could not request results from Microsoft Bing Voice Recognition service; {0}".format(e))
+        text = "Something went wrong. Please try again."
+
+    update.message.reply_text(text, reply_to_message_id=msg_id)
+
+    if os.path.exists(audio_name):
+        os.remove(audio_name)
+    if os.path.exists(audio_temp_name):
+        os.remove(audio_temp_name)
+
+    return ConversationHandler.END
+
+
+def fix_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
+    if "audio_id" in user_data and user_data["audio_id"]:
+        audio_id = user_data["audio_id"]
+        del user_data["audio_id"]
+        audio_file = bot.get_file(audio_id)
+        audio_file.download(audio_temp_name)
+    else:
+        audio_url = user_data["audio_url"]
+        del user_data["audio_url"]
+        response = requests.get(audio_url)
+
+        if response.status_code == 200:
+            with open(audio_temp_name, "wb") as f:
+                for chunk in response:
+                    f.write(chunk)
+        else:
+            update.message.reply_text("I could not download the audio from the URL you sent me. Please check the URL "
+                                      "and try again.")
+
+    command = "ffmpeg -i {input_audio} {output_audio}". \
+        format(input_audio=audio_temp_name, output_audio=audio_name)
+
+    process = Popen(shlex.split(command), stdout=PIPE, stderr=PIPE)
+    process_out, process_err = process.communicate()
+
+    if process.returncode != 0 or not os.path.exists(audio_name) or "[Errno" in process_err.decode("utf8").strip():
+        print(process_err.decode("utf8").strip())
+        update.message.reply_text("Something went wrong")
+
+        return ConversationHandler.END
+
+    r = sr.Recognizer()
+    with sr.AudioFile(audio_name) as source:
+        audio = r.record(source)
+
+    return audio
+
+
 # Processes request
 def process_request(method, url, json, data, headers, params):
     result = None
@@ -734,7 +837,7 @@ def process_request(method, url, json, data, headers, params):
                 break
         elif response.status_code == 200:
             if int(response.headers["content-length"]) != 0 and \
-                    "application/json" in response.headers["content-type"].lower():
+                            "application/json" in response.headers["content-type"].lower():
                 result = response.json() if response.content else None
         else:
             err_msg = "Something went wrong. Please try again."
@@ -849,7 +952,7 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("help", help))
     dp.add_handler(CommandHandler("donate", donate))
-    dp.add_handler(image_cov_handler())
+    dp.add_handler(file_cov_handler())
     dp.add_handler(feedback_cov_handler())
     dp.add_handler(CommandHandler("send", send, pass_args=True))
 
