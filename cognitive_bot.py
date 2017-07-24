@@ -53,13 +53,45 @@ upload_size_limit = 50000000
 clip_art_types = {0: "non-clip-art", 1: "ambiguous", 2: "normal-clip-art", 3: "good-clip-art"}
 
 
+def main():
+    # Create the EventHandler and pass it your bot"s token.
+    updater = Updater(telegram_token)
+
+    # Get the dispatcher to register handlers
+    dp = updater.dispatcher
+    # on different commands - answer in Telegram
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", help))
+    dp.add_handler(CommandHandler("donate", donate))
+    dp.add_handler(file_cov_handler())
+    dp.add_handler(feedback_cov_handler())
+    dp.add_handler(CommandHandler("send", send, pass_args=True))
+
+    # log all errors
+    dp.add_error_handler(error)
+
+    # Start the Bot
+    if app_url:
+        updater.start_webhook(listen="0.0.0.0",
+                              port=port,
+                              url_path=telegram_token)
+        updater.bot.set_webhook(app_url + telegram_token)
+    else:
+        updater.start_polling()
+
+    # Run the bot until the you presses Ctrl-C or the process receives SIGINT,
+    # SIGTERM or SIGABRT. This should be used most of the time, since
+    # start_polling() is non-blocking and will stop the bot gracefully.
+    updater.idle()
+
+
 # Sends start message
 @run_async
 def start(bot, update):
     tele_id = update.message.chat.id
 
     if update.message.chat.type != "group":
-        message = "Welcome to Cognitive Bot. I can do visual and speech analysis. Type /help to see how to use the bot."
+        message = "Welcome to Cognitive Bot!\n\nI can provide you cognitive services. Type /help to see how to use me."
 
         bot.sendMessage(tele_id, message)
 
@@ -69,8 +101,10 @@ def start(bot, update):
 def help(bot, update):
     tele_id = update.message.from_user.id
 
-    message = "Simply send me an image and I will go from there with you. I highly recommend you to send it as a " \
-              "document to prevent compression of the image."
+    message = "Simply send me an image or an audio and I will go from there with you. You can also send me links of " \
+              "the image or audio.\n\n"
+    message += "When sending me an image, I highly recommend you to send it as a document to prevent compression of " \
+               "the image."
 
     bot.sendMessage(tele_id, message)
 
@@ -84,7 +118,7 @@ def donate(bot, update):
     bot.send_message(player_tele_id, message)
 
 
-# Creates an image conversation handler
+# Creates an image/audio conversation handler
 def file_cov_handler():
     merged_filter = (Filters.audio | Filters.document | Filters.entity(MessageEntity.URL) | Filters.photo |
                      Filters.voice) & (~Filters.forwarded | Filters.forwarded)
@@ -93,17 +127,17 @@ def file_cov_handler():
         entry_points=[MessageHandler(merged_filter, check_file, pass_user_data=True)],
 
         states={
-            RECEIVE_IMAGE: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
-                            RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
-                            RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
-                            RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
-                            RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
-                            RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
-                            RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
-            RECEIVE_AUDIO: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)]
+            WAIT_IMAGE_TASK: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
+                              RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
+                              RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
+                              RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
+                              RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
+                              RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
+                              RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
+            WAIT_AUDIO_TASK: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)]
         },
 
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), RegexHandler("^[Cc]ancel$", cancel)],
 
         allow_reentry=True
     )
@@ -111,7 +145,7 @@ def file_cov_handler():
     return conv_handler
 
 
-# Validates image received
+# Checks for the document or image or audio received
 def check_file(bot, update, user_data):
     file_type = None
     return_type = ConversationHandler.END
@@ -123,12 +157,12 @@ def check_file(bot, update, user_data):
     elif update.message.audio or update.message.voice:
         file_type = "audio"
 
+    # Checks if document is an image or audio, if not, ends the conversation
     if file_type == "doc":
         doc = update.message.document
         doc_id = doc.file_id
         doc_name = doc.file_name
         doc_size = doc.file_size
-
         mimetype = mimetypes.guess_type(doc_name)[0]
 
         if mimetype.startswith("image"):
@@ -138,59 +172,66 @@ def check_file(bot, update, user_data):
                 return ConversationHandler.END
 
             user_data["image_id"] = doc_id
-            return_type = RECEIVE_IMAGE
+            return_type = WAIT_IMAGE_TASK
         elif mimetype.startswith("audio"):
             user_data["audio_id"] = doc_id
-            return_type = RECEIVE_AUDIO
+            return_type = WAIT_AUDIO_TASK
     elif file_type == "image":
         image = update.message.photo[0]
         user_data["image_id"] = image.file_id
-        return_type = RECEIVE_IMAGE
+        return_type = WAIT_IMAGE_TASK
     elif file_type == "audio":
         audio = update.message.audio if update.message.audio else update.message.voice
         user_data["audio_id"] = audio.file_id
-        return_type = RECEIVE_AUDIO
+        return_type = WAIT_AUDIO_TASK
+
+    # Checks for received URL
     else:
         file_url = update.message.text
         mimetype = mimetypes.guess_type(file_url)[0]
         response = requests.get(file_url)
 
-        if mimetype.startswith("image"):
-            user_data["image_url"] = file_url
-            return_type = RECEIVE_IMAGE
-        elif mimetype.startswith("audio"):
-            user_data["audio_url"] = file_url
-            return_type = RECEIVE_AUDIO
-        elif response.status_code not in range(200, 209):
-            update.message.reply_text("I could not retrieve the file from the URL you sent me. Please try again.")
+        # If URL does not give an image or audio, ends the conversation
+        if mimetype.startswith("image") or mimetype.startswith("audio"):
+            if response.status_code not in range(200, 209):
+                update.message.reply_text("I could not retrieve the file from the URL you sent me. Please try again.")
 
-            return ConversationHandler.END
-        elif mimetype.startswith("image") and int(response.headers["content-length"]) > cognitive_image_size_limit:
-            update.message.reply_text("The image on the URL you sent me is too large for me to process. Sorry.")
+                return ConversationHandler.END
 
+            if mimetype.startswith("image"):
+                if int(response.headers["content-length"]) > cognitive_image_size_limit:
+                    update.message.reply_text("The image on the URL you sent me is too large for me to process. Sorry.")
+
+                    return ConversationHandler.END
+
+                user_data["image_url"] = file_url
+                return_type = WAIT_IMAGE_TASK
+            elif mimetype.startswith("audio"):
+                user_data["audio_url"] = file_url
+                return_type = WAIT_AUDIO_TASK
+        else:
             return ConversationHandler.END
 
     user_data["msg_id"] = update.message.message_id
 
-    if return_type == RECEIVE_IMAGE:
+    if return_type == WAIT_IMAGE_TASK:
         keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
-        keywords.append("Full Analysis")
+        keywords += ["Full Analysis", "Cancel"]
         keyboard_size = 3
         keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
-        reply_markup = ReplyKeyboardMarkup(keyboard)
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
 
         update.message.reply_text("Please tell me what do you want me to look for on the image.",
-                                  reply_markup=reply_markup,
-                                  one_time_keyboard=True)
-    elif return_type == RECEIVE_AUDIO:
+                                  reply_markup=reply_markup)
+    elif return_type == WAIT_AUDIO_TASK:
         keywords = sorted(["To Text"])
+        keywords += ["Cancel"]
         keyboard_size = 3
         keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
-        reply_markup = ReplyKeyboardMarkup(keyboard)
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
 
         update.message.reply_text("Please tell me what do you want me to do with the audio.",
-                                  reply_markup=reply_markup,
-                                  one_time_keyboard=True)
+                                  reply_markup=reply_markup)
 
     return return_type
 
@@ -214,7 +255,7 @@ def get_image_full_analysis(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Categories, Tags, Description, Faces, ImageType, Color",
               "details": "Celebrities, Landmarks"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, comp_vision_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -416,7 +457,7 @@ def get_image_category(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "Categories"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -463,7 +504,7 @@ def get_image_colour(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "Color"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -509,7 +550,7 @@ def get_image_description(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "Description", "details": "Landmarks"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -566,7 +607,7 @@ def get_image_face(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "Faces, Color"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, face_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -637,7 +678,7 @@ def get_image_tag(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "Tags"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -684,7 +725,7 @@ def get_image_type(bot, update, user_data):
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
     params = {"visualFeatures": "ImageType"}
-    data = fix_and_read_image(bot, update, user_data, image_name)
+    data = convert_and_read_image(bot, update, user_data, image_name)
     result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
 
     if result:
@@ -712,8 +753,8 @@ def get_image_type(bot, update, user_data):
     return ConversationHandler.END
 
 
-# Checks if the image format is supported, if not transform it into JPEG format
-def fix_and_read_image(bot, update, user_data, image_name):
+# Checks if the image format is supported, if not converts it into JPEG format
+def convert_and_read_image(bot, update, user_data, image_name):
     if "image_id" in user_data and user_data["image_id"]:
         image_id = user_data["image_id"]
         del user_data["image_id"]
@@ -754,7 +795,7 @@ def audio_to_text(bot, update, user_data):
     audio_name = str(tele_id) + "_audio.wav"
     audio_temp_name = audio_name + "_temp"
 
-    audio = fix_and_read_audio(bot, update, user_data, audio_name, audio_temp_name)
+    audio = convert_and_read_audio(bot, update, user_data, audio_name, audio_temp_name)
     r = sr.Recognizer()
 
     try:
@@ -775,7 +816,7 @@ def audio_to_text(bot, update, user_data):
     return ConversationHandler.END
 
 
-def fix_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
+def convert_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
     if "audio_id" in user_data and user_data["audio_id"]:
         audio_id = user_data["audio_id"]
         del user_data["audio_id"]
@@ -794,7 +835,7 @@ def fix_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
             update.message.reply_text("I could not download the audio from the URL you sent me. Please check the URL "
                                       "and try again.")
 
-    command = "ffmpeg -i {input_audio} {output_audio}". \
+    command = "ffmpeg -y -i {input_audio} {output_audio}". \
         format(input_audio=audio_temp_name, output_audio=audio_name)
 
     process = Popen(shlex.split(command), stdout=PIPE, stderr=PIPE)
@@ -938,40 +979,8 @@ def send(bot, update, args):
             bot.send_message(dev_tele_id, "Failed to send message")
 
 
-def error(bot, update, error):
-    logger.warning("Update '%s' caused error '%s'" % (update, error))
-
-
-def main():
-    # Create the EventHandler and pass it your bot"s token.
-    updater = Updater(telegram_token)
-
-    # Get the dispatcher to register handlers
-    dp = updater.dispatcher
-    # on different commands - answer in Telegram
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("donate", donate))
-    dp.add_handler(file_cov_handler())
-    dp.add_handler(feedback_cov_handler())
-    dp.add_handler(CommandHandler("send", send, pass_args=True))
-
-    # log all errors
-    dp.add_error_handler(error)
-
-    # Start the Bot
-    if app_url:
-        updater.start_webhook(listen="0.0.0.0",
-                              port=port,
-                              url_path=telegram_token)
-        updater.bot.set_webhook(app_url + telegram_token)
-    else:
-        updater.start_polling()
-
-    # Run the bot until the you presses Ctrl-C or the process receives SIGINT,
-    # SIGTERM or SIGABRT. This should be used most of the time, since
-    # start_polling() is non-blocking and will stop the bot gracefully.
-    updater.idle()
+def error(bot, update, error_msg):
+    logger.warning("Update '%s' caused error '%s'" % (update, error_msg))
 
 
 if __name__ == "__main__":
