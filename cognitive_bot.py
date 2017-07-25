@@ -42,7 +42,8 @@ is_email_feedback = os.environ.get("IS_EMAIL_FEEDBACK")
 smtp_host = os.environ.get("SMTP_HOST")
 
 comp_vision_token = os.environ.get("COMP_VISION_TOKEN")
-comp_vision_url = os.environ.get("COMP_VISION_URL")
+comp_vision_analysis_url = os.environ.get("COMP_VISION_ANALYSIS_URL")
+comp_vision_ocr_url = os.environ.get("COMP_VISION_OCR_URL")
 emotion_token = os.environ.get("EMOTION_TOKEN")
 emotion_url = os.environ.get("EMOTION_URL")
 bing_speech_token = os.environ.get("BING_SPEECH_TOKEN")
@@ -107,14 +108,14 @@ def help(bot, update):
 
     message = "Simply send me an image or an audio and I will go from there with you. You can also send me links of " \
               "the image or audio.\n\n"
-    message += "When sending me an image, I highly recommend you to send it as a document to prevent compression of " \
-               "the image and to get a more accurate result.\n\n"
+    message += "When sending me an image, I *highly recommend* you to send it as a document to prevent compression " \
+               "of the image and to get a more accurate result.\n\n"
     message += "Stay tuned for updates on @cognitivebotdev"
 
     keyboard = [[InlineKeyboardButton("Rate me", "https://t.me/storebot?start=cognitivebot")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    bot.sendMessage(tele_id, message, reply_markup=reply_markup)
+    bot.sendMessage(tele_id, message, reply_markup=reply_markup, parse_mode="markdown")
 
 
 # Sends donate message
@@ -141,8 +142,10 @@ def file_cov_handler():
                               RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
                               RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
                               RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
-                              RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True)],
-            WAIT_AUDIO_TASK: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)]
+                              RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True),
+                              RegexHandler("^[Tt]ext$", ask_image_text)],
+            WAIT_AUDIO_TASK: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)],
+            WAIT_IMAGE_TEXT: [RegexHandler("^[Nn]ormal [Tt]ext", get_image_normal_text, pass_user_data=True)]
         },
 
         fallbacks=[CommandHandler("cancel", cancel), RegexHandler("^[Cc]ancel$", cancel)],
@@ -223,7 +226,7 @@ def check_file(bot, update, user_data):
     user_data["msg_id"] = update.message.message_id
 
     if return_type == WAIT_IMAGE_TASK:
-        keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour"])
+        keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour", "Text"])
         keywords += ["Full Analysis", "Cancel"]
         keyboard_size = 3
         keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
@@ -243,6 +246,16 @@ def check_file(bot, update, user_data):
                                   reply_markup=reply_markup)
 
     return return_type
+
+
+# Asks for what kind of text to look for
+def ask_image_text(bot, update):
+    keyboard = [["Normal Text"], ["Handwritten Text"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard)
+    update.message.reply_text("Do you want me to look for normal text or handwritten text?",
+                              reply_markup=reply_markup)
+
+    return WAIT_IMAGE_TEXT
 
 
 # Fully analysis an image
@@ -265,7 +278,7 @@ def get_image_full_analysis(bot, update, user_data):
     params = {"visualFeatures": "Categories, Tags, Description, Faces, ImageType, Color",
               "details": "Celebrities, Landmarks"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, comp_vision_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, comp_vision_err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         text = "Here is a summary of it:\n\n"
@@ -467,7 +480,7 @@ def get_image_category(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Categories"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         num_categories = len(result["categories"])
@@ -514,7 +527,7 @@ def get_image_colour(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Color"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         colour = result["color"]
@@ -560,7 +573,7 @@ def get_image_description(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Description", "details": "Landmarks"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         target_landmark = None
@@ -618,7 +631,7 @@ def get_image_face(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Faces, Color"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, face_err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, face_err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         accent_colour = "#" + result["color"]["accentColor"]
@@ -689,7 +702,7 @@ def get_image_tag(bot, update, user_data):
     json = None
     params = {"visualFeatures": "Tags"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         num_tags = len(result["tags"])
@@ -720,6 +733,44 @@ def get_image_tag(bot, update, user_data):
     return ConversationHandler.END
 
 
+# Gets normal text from the image
+def get_image_normal_text(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Looking for text on the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_tag"
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = None
+    data = convert_and_read_image(bot, update, user_data, image_name)
+    result, err_msg = process_request("post", comp_vision_ocr_url, json, data, headers, params)
+
+    if result:
+        text = ""
+
+        for region in result["regions"]:
+            for line in region["lines"]:
+                for word in line["words"]:
+                    text += word["text"] + " "
+
+                text += "\n"
+
+        update.message.reply_text(text, reply_to_message_id=msg_id)
+    elif err_msg:
+        update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
 # Gets image type
 def get_image_type(bot, update, user_data):
     if ("image_id" in user_data and not user_data["image_id"]) or \
@@ -736,7 +787,7 @@ def get_image_type(bot, update, user_data):
     json = None
     params = {"visualFeatures": "ImageType"}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_analysis_url, json, data, headers, params)
 
     if result:
         image_type = result["imageType"]
@@ -769,6 +820,7 @@ def convert_and_read_image(bot, update, user_data, image_name):
         image_id = user_data["image_id"]
         del user_data["image_id"]
         image_file = bot.get_file(image_id)
+        print(image_file.file_path)
         image_file.download(image_name)
     else:
         image_url = user_data["image_url"]
