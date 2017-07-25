@@ -17,7 +17,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 from subprocess import Popen, PIPE
 
-from telegram import MessageEntity, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, ConversationHandler, MessageHandler, Filters, RegexHandler
 from telegram.ext.dispatcher import run_async
 
@@ -33,7 +33,8 @@ dotenv.load(dotenv_path)
 app_url = os.environ.get("APP_URL")
 port = int(os.environ.get("PORT", "5000"))
 
-telegram_token = os.environ.get("TELEGRAM_TOKEN_BETA")
+telegram_token = os.environ.get("TELEGRAM_TOKEN_BETA") if os.environ.get("TELEGRAM_TOKEN_BETA") \
+    else os.environ.get("TELEGRAM_TOKEN")
 dev_tele_id = int(os.environ.get("DEV_TELE_ID"))
 dev_email = os.environ.get("DEV_EMAIL") if os.environ.get("DEV_EMAIL") else "sample@email.com"
 dev_email_pw = os.environ.get("DEV_EMAIL_PW")
@@ -91,7 +92,10 @@ def start(bot, update):
     tele_id = update.message.chat.id
 
     if update.message.chat.type != "group":
-        message = "Welcome to Cognitive Bot!\n\nI can provide you cognitive services. Type /help to see how to use me."
+        message = "Welcome to Cognitive Bot!\n\n"
+        message += "I can provide you cognitive services. I can look for faces to look for their age, gender and " \
+                   "emotions in an image. I can also do speech-to-text with an audio etc.\n\n"
+        message += "Type /help to see how to use me."
 
         bot.sendMessage(tele_id, message)
 
@@ -104,9 +108,13 @@ def help(bot, update):
     message = "Simply send me an image or an audio and I will go from there with you. You can also send me links of " \
               "the image or audio.\n\n"
     message += "When sending me an image, I highly recommend you to send it as a document to prevent compression of " \
-               "the image."
+               "the image and to get a more accurate result.\n\n"
+    message += "Stay tuned for updates on @cognitivebotdev"
 
-    bot.sendMessage(tele_id, message)
+    keyboard = [[InlineKeyboardButton("Rate me", "https://t.me/storebot?start=cognitivebot")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    bot.sendMessage(tele_id, message, reply_markup=reply_markup)
 
 
 # Sends donate message
@@ -224,10 +232,11 @@ def check_file(bot, update, user_data):
         update.message.reply_text("Please tell me what do you want me to look for on the image.",
                                   reply_markup=reply_markup)
     elif return_type == WAIT_AUDIO_TASK:
-        keywords = sorted(["To Text"])
-        keywords += ["Cancel"]
-        keyboard_size = 3
-        keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
+        # keywords = sorted(["To Text"])
+        # keywords += ["Cancel"]
+        # keyboard_size = 3
+        # keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
+        keyboard = [["To Text"], ["Cancel"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
 
         update.message.reply_text("Please tell me what do you want me to do with the audio.",
@@ -559,14 +568,15 @@ def get_image_description(bot, update, user_data):
         max_landmark_conf = 0
         max_caption_conf = 0
 
-        for category in result["categories"]:
-            if "detail" in category and "landmarks" in category["detail"]:
-                for landmark in category["detail"]["landmarks"]:
-                    landmark_name, landmark_conf = landmark["name"], landmark["confidence"]
+        if "categories" in result:
+            for category in result["categories"]:
+                if "detail" in category and "landmarks" in category["detail"]:
+                    for landmark in category["detail"]["landmarks"]:
+                        landmark_name, landmark_conf = landmark["name"], landmark["confidence"]
 
-                    if landmark_conf > max_landmark_conf:
-                        target_landmark = landmark_name
-                        max_landmark_conf = landmark_conf
+                        if landmark_conf > max_landmark_conf:
+                            target_landmark = landmark_name
+                            max_landmark_conf = landmark_conf
 
         if target_landmark:
             text = "I'll say it's the %s." % target_landmark
@@ -623,7 +633,7 @@ def get_image_face(bot, update, user_data):
 
             face_info[(left, top, width, height)] = (age, gender)
     elif not face_err_msg:
-        update.message.reply_text("I could not find any faces on the image. Please send me another image with faces.")
+        update.message.reply_text("I could not find any faces on the image.")
 
         if os.path.exists(image_name):
             os.remove(image_name)
@@ -653,7 +663,7 @@ def get_image_face(bot, update, user_data):
     elif emotion_err_msg:
         update.message.reply_text(emotion_err_msg)
     else:
-        update.message.reply_text("I could not find any faces on the image. Please send me another image with faces.")
+        update.message.reply_text("I could not find any faces on the image.")
 
     if os.path.exists(image_name):
         os.remove(image_name)
@@ -842,7 +852,6 @@ def convert_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
     process_out, process_err = process.communicate()
 
     if process.returncode != 0 or not os.path.exists(audio_name) or "[Errno" in process_err.decode("utf8").strip():
-        print(process_err.decode("utf8").strip())
         update.message.reply_text("Something went wrong")
 
         return ConversationHandler.END
