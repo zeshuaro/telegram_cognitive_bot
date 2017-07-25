@@ -1,0 +1,6 @@
+langdetect==1.0.7
+Pillow==4.2.1
+python-telegram-bot==6.1.0
+python-env==1.0.0
+requests==2.18.1
+SpeechRecognition==3.7.1
