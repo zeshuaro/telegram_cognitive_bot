@@ -140,7 +140,7 @@ def file_cov_handler():
                               RegexHandler("^Description$", get_image_description, pass_user_data=True),
                               RegexHandler("^Faces$", get_image_face, pass_user_data=True),
                               RegexHandler("^Image Type$", get_image_type, pass_user_data=True),
-                              RegexHandler("^tags$", get_image_tag, pass_user_data=True),
+                              RegexHandler("^Tags$", get_image_tag, pass_user_data=True),
                               RegexHandler("^Text \(Normal\)$", get_image_normal_text, pass_user_data=True),
                               RegexHandler("^Text \(Handwritten\)$", get_image_handwritten_text, pass_user_data=True)],
             WAIT_AUDIO_TASK: [RegexHandler("^To Text", audio_to_text, pass_user_data=True)],
@@ -679,7 +679,7 @@ def get_image_tag(bot, update, user_data):
             ("image_url" in user_data and not user_data["image_url"]):
         return
 
-    update.message.reply_text("Looking for the tags on the image.", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("Looking for tags of the image.", reply_markup=ReplyKeyboardRemove())
 
     tele_id = update.message.from_user.id
     msg_id = user_data["msg_id"]
@@ -694,7 +694,9 @@ def get_image_tag(bot, update, user_data):
     if result:
         num_tags = len(result["tags"])
 
-        if num_tags == 1:
+        if num_tags == 0:
+            text = "I can't find any tags for it."
+        elif num_tags == 1:
             text = "I think it is "
         else:
             text = "I think it has tags of "
