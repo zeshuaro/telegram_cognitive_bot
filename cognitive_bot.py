@@ -91,7 +91,7 @@ def start(bot, update):
 
     if update.message.chat.type != "group":
         message = "Welcome to Cognitive Bot!\n\n"
-        message += "I can provide you cognitive services. I can look for faces to look for their age, gender and " \
+        message += "I can provide cognitive services to you. I can look for faces to look for their age, gender and " \
                    "emotions on an image. I can also look for text on an image. And I can do speech-to-text with an " \
                    "audio etc.\n\n"
         message += "Type /help to see how to use me."
