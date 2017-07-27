@@ -92,7 +92,8 @@ def start(bot, update):
     if update.message.chat.type != "group":
         message = "Welcome to Cognitive Bot!\n\n"
         message += "I can provide you cognitive services. I can look for faces to look for their age, gender and " \
-                   "emotions in an image. I can also do speech-to-text with an audio etc.\n\n"
+                   "emotions on an image. I can also look for text on an image. And I can do speech-to-text with an " \
+                   "audio etc.\n\n"
         message += "Type /help to see how to use me."
 
         bot.sendMessage(tele_id, message)
@@ -107,9 +108,9 @@ def help(bot, update):
               "the image or audio.\n\n"
     message += "When sending me an image, I *highly recommend* you to send it as a document to prevent compression " \
                "of the image and to get a more accurate result.\n\n"
-    message += "Stay tuned for updates on @cognitivebotdev"
 
-    keyboard = [[InlineKeyboardButton("Rate me", "https://t.me/storebot?start=cognitivebot")]]
+    keyboard = [[InlineKeyboardButton("Join Channel", "https://t.me/cognitivebotdev"),
+                 InlineKeyboardButton("Rate me", "https://t.me/storebot?start=cognitivebot")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     bot.sendMessage(tele_id, message, reply_markup=reply_markup, parse_mode="markdown")
