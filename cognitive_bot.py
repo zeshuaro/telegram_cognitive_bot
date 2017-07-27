@@ -43,15 +43,12 @@ smtp_host = os.environ.get("SMTP_HOST")
 
 comp_vision_token = os.environ.get("COMP_VISION_TOKEN")
 comp_vision_analysis_url = os.environ.get("COMP_VISION_ANALYSIS_URL")
-comp_vision_ocr_url = os.environ.get("COMP_VISION_OCR_URL")
+comp_vision_text_url = os.environ.get("COMP_VISION_TEXT_URL")
 emotion_token = os.environ.get("EMOTION_TOKEN")
 emotion_url = os.environ.get("EMOTION_URL")
 bing_speech_token = os.environ.get("BING_SPEECH_TOKEN")
 
 cognitive_image_size_limit = 4000000
-download_size_limit = 20000000
-upload_size_limit = 50000000
-
 clip_art_types = {0: "non-clip-art", 1: "ambiguous", 2: "normal-clip-art", 3: "good-clip-art"}
 
 
@@ -136,16 +133,16 @@ def file_cov_handler():
         entry_points=[MessageHandler(merged_filter, check_file, pass_user_data=True)],
 
         states={
-            WAIT_IMAGE_TASK: [RegexHandler("^[Ff]ull [Aa]nalysis", get_image_full_analysis, pass_user_data=True),
-                              RegexHandler("^[Cc]ategories", get_image_category, pass_user_data=True),
-                              RegexHandler("^[Cc]olou?r", get_image_colour, pass_user_data=True),
-                              RegexHandler("^[Dd]escription", get_image_description, pass_user_data=True),
-                              RegexHandler("^[Ff]aces", get_image_face, pass_user_data=True),
-                              RegexHandler("^[Ii]mage [Tt]ype", get_image_type, pass_user_data=True),
-                              RegexHandler("^[Tt]ags", get_image_tag, pass_user_data=True),
-                              RegexHandler("^[Tt]ext$", ask_image_text)],
-            WAIT_AUDIO_TASK: [RegexHandler("^[Tt]o [Tt]ext", audio_to_text, pass_user_data=True)],
-            WAIT_IMAGE_TEXT: [RegexHandler("^[Nn]ormal [Tt]ext", get_image_normal_text, pass_user_data=True)]
+            WAIT_IMAGE_TASK: [RegexHandler("^Full Analysis$", get_image_full_analysis, pass_user_data=True),
+                              RegexHandler("^Categories$", get_image_category, pass_user_data=True),
+                              RegexHandler("^Colour$", get_image_colour, pass_user_data=True),
+                              RegexHandler("^Description$", get_image_description, pass_user_data=True),
+                              RegexHandler("^Faces$", get_image_face, pass_user_data=True),
+                              RegexHandler("^Image Type$", get_image_type, pass_user_data=True),
+                              RegexHandler("^tags$", get_image_tag, pass_user_data=True),
+                              RegexHandler("^Text \(Normal\)$", get_image_normal_text, pass_user_data=True),
+                              RegexHandler("^Text \(Handwritten\)$", get_image_handwritten_text, pass_user_data=True)],
+            WAIT_AUDIO_TASK: [RegexHandler("^To Text", audio_to_text, pass_user_data=True)],
         },
 
         fallbacks=[CommandHandler("cancel", cancel), RegexHandler("^[Cc]ancel$", cancel)],
@@ -165,6 +162,8 @@ def check_file(bot, update, user_data):
         file_type = "doc"
     elif update.message.photo:
         file_type = "image"
+        update.message.reply_text("I see you sent me a photo. I *highly recommend* you to send it as a document to "
+                                  "receive more accurate results.", parse_mode="Markdown")
     elif update.message.audio or update.message.voice:
         file_type = "audio"
 
@@ -226,19 +225,16 @@ def check_file(bot, update, user_data):
     user_data["msg_id"] = update.message.message_id
 
     if return_type == WAIT_IMAGE_TASK:
-        keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour", "Text"])
-        keywords += ["Full Analysis", "Cancel"]
+        keywords = sorted(["Categories", "Tags", "Description", "Faces", "Image Type", "Colour", "Text (Normal)",
+                           "Text (Handwritten)"])
         keyboard_size = 3
         keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
+        keyboard.append(["Full Analysis", "Cancel"])
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
 
         update.message.reply_text("Please tell me what do you want me to look for on the image.",
                                   reply_markup=reply_markup)
     elif return_type == WAIT_AUDIO_TASK:
-        # keywords = sorted(["To Text"])
-        # keywords += ["Cancel"]
-        # keyboard_size = 3
-        # keyboard = [keywords[i:i + keyboard_size] for i in range(0, len(keywords), keyboard_size)]
         keyboard = [["To Text"], ["Cancel"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
 
@@ -246,16 +242,6 @@ def check_file(bot, update, user_data):
                                   reply_markup=reply_markup)
 
     return return_type
-
-
-# Asks for what kind of text to look for
-def ask_image_text(bot, update):
-    keyboard = [["Normal Text"], ["Handwritten Text"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard)
-    update.message.reply_text("Do you want me to look for normal text or handwritten text?",
-                              reply_markup=reply_markup)
-
-    return WAIT_IMAGE_TEXT
 
 
 # Fully analysis an image
@@ -739,7 +725,7 @@ def get_image_normal_text(bot, update, user_data):
             ("image_url" in user_data and not user_data["image_url"]):
         return
 
-    update.message.reply_text("Looking for text on the image.", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("Looking for normal text on the image.", reply_markup=ReplyKeyboardRemove())
 
     tele_id = update.message.from_user.id
     msg_id = user_data["msg_id"]
@@ -747,9 +733,9 @@ def get_image_normal_text(bot, update, user_data):
 
     headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
     json = None
-    params = None
+    params = {"handwriting": False}
     data = convert_and_read_image(bot, update, user_data, image_name)
-    result, err_msg = process_request("post", comp_vision_ocr_url, json, data, headers, params)
+    result, err_msg = process_request("post", comp_vision_text_url, json, data, headers, params)
 
     if result:
         text = ""
@@ -764,6 +750,61 @@ def get_image_normal_text(bot, update, user_data):
         update.message.reply_text(text, reply_to_message_id=msg_id)
     elif err_msg:
         update.message.reply_text(err_msg)
+
+    if os.path.exists(image_name):
+        os.remove(image_name)
+
+    return ConversationHandler.END
+
+
+# Gets handwritten text from the image
+def get_image_handwritten_text(bot, update, user_data):
+    if ("image_id" in user_data and not user_data["image_id"]) or \
+            ("image_url" in user_data and not user_data["image_url"]):
+        return
+
+    update.message.reply_text("Looking for handwritten text on the image.", reply_markup=ReplyKeyboardRemove())
+
+    tele_id = update.message.from_user.id
+    msg_id = user_data["msg_id"]
+    image_name = str(tele_id) + "_tag"
+    operation_url = None
+
+    headers = {"Ocp-Apim-Subscription-Key": comp_vision_token, "Content-Type": "application/octet-stream"}
+    json = None
+    params = {"handwriting": True}
+    data = convert_and_read_image(bot, update, user_data, image_name)
+
+    response = requests.request(method="post", url=comp_vision_text_url, json=json, data=data, headers=headers,
+                                params=params)
+
+    if response.status_code == 403:
+        update.message.reply_text("I ran out of quota for processing images. Please try again later. Sorry.")
+
+        if os.path.exists(image_name):
+            os.remove(image_name)
+
+        return ConversationHandler.END
+    elif response.status_code == 202:
+        operation_url = response.headers["Operation-Location"]
+
+    if operation_url:
+        headers = {"Ocp-Apim-Subscription-Key": comp_vision_token}
+        json = None
+        params = None
+        data = None
+        result, err_msg = process_request("get", operation_url, json, data, headers, params)
+
+        if result:
+            text = ""
+            recognition_result = result["recognitionResult"]
+
+            for line in recognition_result["lines"]:
+                text += line["text"] + "\n"
+
+            update.message.reply_text(text, reply_to_message_id=msg_id)
+        elif err_msg:
+            update.message.reply_text(err_msg)
 
     if os.path.exists(image_name):
         os.remove(image_name)
@@ -820,7 +861,6 @@ def convert_and_read_image(bot, update, user_data, image_name):
         image_id = user_data["image_id"]
         del user_data["image_id"]
         image_file = bot.get_file(image_id)
-        print(image_file.file_path)
         image_file.download(image_name)
     else:
         image_url = user_data["image_url"]
@@ -845,6 +885,7 @@ def convert_and_read_image(bot, update, user_data, image_name):
     return data
 
 
+# Returns the text of an audio
 def audio_to_text(bot, update, user_data):
     if ("audio_id" in user_data and not user_data["audio_id"]) or \
             ("audio_url" in user_data and not user_data["audio_url"]):
@@ -878,6 +919,7 @@ def audio_to_text(bot, update, user_data):
     return ConversationHandler.END
 
 
+# Converts the audio to wav format and reads it
 def convert_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
     if "audio_id" in user_data and user_data["audio_id"]:
         audio_id = user_data["audio_id"]
@@ -919,27 +961,25 @@ def convert_and_read_audio(bot, update, user_data, audio_name, audio_temp_name):
 def process_request(method, url, json, data, headers, params):
     result = None
     err_msg = None
-    retry_count = 0
-    max_retry_num = 3
 
     while True:
         response = requests.request(method=method, url=url, json=json, data=data, headers=headers, params=params)
 
         if response.status_code == 403:
             err_msg = "I ran out of quota for processing images. Please try again later. Sorry."
-        elif response.status_code == 429:
-            if retry_count <= max_retry_num:
-                time.sleep(1)
-                retry_count += 1
-
-                continue
-            else:
-                err_msg = "Something went wrong. Please try again."
-
-                break
         elif response.status_code == 200:
             if int(response.headers["content-length"]) != 0 and \
                             "application/json" in response.headers["content-type"].lower():
+                if "status" in response.json():
+                    if response.json()["status"] in ("Not started", "Running"):
+                        time.sleep(3)
+
+                        continue
+                    elif response.json()["status"] == "Failed":
+                        err_msg = "Something went wrong. Please try again."
+
+                        break
+
                 result = response.json() if response.content else None
         else:
             err_msg = "Something went wrong. Please try again."
