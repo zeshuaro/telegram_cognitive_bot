@@ -104,10 +104,8 @@ def start(bot, update):
 def help(bot, update):
     tele_id = update.message.from_user.id
 
-    message = "Simply send me an image or an audio and I will go from there with you. You can also send me links of " \
-              "the image or audio.\n\n"
-    message += "When sending me an image, I *highly recommend* you to send it as a document to prevent compression " \
-               "of the image and to get a more accurate result.\n\n"
+    message = "Simply send me an image or audio and I will go from there with you. You can also send me links of " \
+              "an image or audio.\n\n"
 
     keyboard = [[InlineKeyboardButton("Join Channel", "https://t.me/cognitivebotdev"),
                  InlineKeyboardButton("Rate me", "https://t.me/storebot?start=cognitivebot")]]
@@ -163,8 +161,6 @@ def check_file(bot, update, user_data):
         file_type = "doc"
     elif update.message.photo:
         file_type = "image"
-        update.message.reply_text("I see you sent me a photo. I *highly recommend* you to send it as a document to "
-                                  "receive more accurate results.", parse_mode="Markdown")
     elif update.message.audio or update.message.voice:
         file_type = "audio"
 
@@ -188,7 +184,14 @@ def check_file(bot, update, user_data):
             user_data["audio_id"] = doc_id
             return_type = WAIT_AUDIO_TASK
     elif file_type == "image":
-        image = update.message.photo[0]
+        image = update.message.photo[-1]
+        image_size = image.file_size
+
+        if image_size > cognitive_image_size_limit:
+            update.message.reply_text("The photo you sent is too large for me to process. Sorry.")
+
+            return ConversationHandler.END
+
         user_data["image_id"] = image.file_id
         return_type = WAIT_IMAGE_TASK
     elif file_type == "audio":
